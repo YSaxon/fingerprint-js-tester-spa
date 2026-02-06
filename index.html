@@ -155,7 +155,7 @@
           const output = {
             event_id: result?.event_id ?? null,
             visitor_id: result?.visitor_id ?? null,
-            sealed_result: result?.sealed_result ?? null,
+            sealed_result: result?.sealed_result?.base64() ?? null,
             cache_hit: result?.cache_hit ?? null,
             suspect_score: result?.suspect_score ?? null,
           };
