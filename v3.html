@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Fingerprint Sealed Result Harness (v3)</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+      input, button, select { font-size: 14px; padding: 8px; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+      .kv { margin: 6px 0; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #f6f7f8; padding: 12px; border-radius: 8px; }
+      .warn { color: #7a4b00; }
+      .err { color: #b00020; }
+      .ok { color: #0b6b0b; }
+    </style>
+  </head>
+  <body>
+    <h1>Fingerprint Sealed Result Harness (v3)</h1>
+
+    <div class="row">
+      <label class="kv">
+        Public API key (k):
+        <input id="k" size="34" placeholder="PUBLIC_API_KEY" />
+      </label>
+
+      <label class="kv">
+        Region (region):
+        <select id="region">
+          <option value="">(auto)</option>
+          <option value="us">us</option>
+          <option value="eu">eu</option>
+          <option value="ap">ap</option>
+        </select>
+      </label>
+
+      <label class="kv">
+        Extended result:
+        <select id="extendedResult">
+          <option value="0">no</option>
+          <option value="1">yes</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <label class="kv" style="flex: 1; min-width: 320px">
+        Optional POST URL (post):
+        <input id="post" style="width: 100%" placeholder="https://your-server.example/fp-capture" />
+      </label>
+
+      <label class="kv">
+        POST mode:
+        <select id="postMode">
+          <option value="cors">cors (read response, needs CORS)</option>
+          <option value="no-cors">no-cors (fire-and-forget)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <button id="run">Generate sealedResult</button>
+      <button id="copyLink">Copy link w- params</button>
+      <span id="status"></span>
+    </div>
+
+    <h2>Output</h2>
+    <div id="meta"></div>
+    <pre id="out">(none yet)</pre>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const statusEl = $("status");
+      const outEl = $("out");
+      const metaEl = $("meta");
+
+      function setStatus(msg, cls = "") {
+        statusEl.className = cls;
+        statusEl.textContent = msg;
+      }
+
+      function getParams() {
+        const u = new URL(location.href);
+        return {
+          k: u.searchParams.get("k") || "",
+          region: u.searchParams.get("region") || "",
+          post: u.searchParams.get("post") || "",
+          postMode: u.searchParams.get("postMode") || "cors",
+          extendedResult: (u.searchParams.get("extendedResult") || "0") === "1",
+          autorun: (u.searchParams.get("autorun") || "") === "1",
+        };
+      }
+
+      function applyParamsToUI(p) {
+        $("k").value = p.k;
+        $("region").value = p.region;
+        $("post").value = p.post;
+        $("postMode").value = p.postMode;
+        $("extendedResult").value = p.extendedResult ? "1" : "0";
+      }
+
+      function buildLinkFromUI() {
+        const u = new URL(location.href);
+
+        const k = $("k").value.trim();
+        u.searchParams.set("k", k);
+
+        const r = $("region").value.trim();
+        if (r) u.searchParams.set("region", r);
+        else u.searchParams.delete("region");
+
+        const post = $("post").value.trim();
+        if (post) u.searchParams.set("post", post);
+        else u.searchParams.delete("post");
+
+        const pm = $("postMode").value;
+        if (pm && pm !== "cors") u.searchParams.set("postMode", pm);
+        else u.searchParams.delete("postMode");
+
+        const ext = $("extendedResult").value === "1";
+        if (ext) u.searchParams.set("extendedResult", "1");
+        else u.searchParams.delete("extendedResult");
+
+        return u.toString();
+      }
+
+      async function postPayload(postUrl, postMode, payload) {
+        const mode = postMode === "no-cors" ? "no-cors" : "cors";
+
+        const res = await fetch(postUrl, {
+          method: "POST",
+          mode,
+          headers: mode === "cors" ? { "Content-Type": "application/json" } : undefined,
+          body: JSON.stringify(payload),
+        });
+
+        if (mode === "no-cors") return { ok: true, note: "no-cors - request sent (response opaque)" };
+
+        const text = await res.text().catch(() => "");
+        return { ok: res.ok, status: res.status, text };
+      }
+
+      async function run() {
+        try {
+          setStatus("Loading agent…");
+          outEl.textContent = "(working…)";
+          metaEl.textContent = "";
+
+          const apiKey = $("k").value.trim();
+          if (!apiKey) {
+            setStatus("Missing ?k=PUBLIC_API_KEY", "err");
+            outEl.textContent = "Provide the public API key in the URL (?k=...) or the input box.";
+            return;
+          }
+
+          // v3 CDN ESM import: /v3/YOUR_PUBLIC_API_KEY :contentReference[oaicite:3]{index=3}
+          const modUrl = `https://fpjscdn.net/v3/${encodeURIComponent(apiKey)}`;
+          const FingerprintJS = await import(modUrl);
+
+          const loadOpts = {};
+          const region = $("region").value.trim();
+          if (region) loadOpts.region = region;
+
+          setStatus("Calling load()…");
+          const fp = await FingerprintJS.load(loadOpts);
+
+          setStatus("Calling get()…");
+          const wantExtended = $("extendedResult").value === "1";
+          const result = await fp.get({ extendedResult: wantExtended });
+
+          // v3 get() response fields: requestId, visitorId, sealedResult :contentReference[oaicite:4]{index=4}
+          const output = {
+            // Keep native v3 names
+            requestId: result?.requestId ?? null,
+            visitorId: result?.visitorId ?? null,
+            sealedResult: result?.sealedResult ?? null,
+
+            // Also include v4-ish aliases to keep your backend/testing shape stable
+            event_id: result?.requestId ?? null,
+            visitor_id: result?.visitorId ?? null,
+            sealed_result: result?.sealedResult ?? null,
+
+            // These exist in v3 extended responses (and some in default), but keep them optional:
+            visitorFound: result?.visitorFound ?? null,
+            confidence: result?.confidence ?? null,
+          };
+
+          metaEl.innerHTML = `
+            <div class="kv"><b>requestId:</b> ${output.requestId ?? "<i>null</i>"}</div>
+            <div class="kv"><b>sealedResult present:</b> ${output.sealedResult ? "<span class='ok'>yes</span>" : "<span class='warn'>no</span>"}</div>
+          `;
+
+          outEl.textContent = JSON.stringify(output, null, 2);
+
+          if (!output.sealedResult) {
+            setStatus("Got result, but sealedResult is missing", "warn");
+            // Typically means Sealed Client Results is disabled/unavailable for this env/key.
+            return;
+          }
+
+          const postUrl = $("post").value.trim();
+          if (postUrl) {
+            setStatus("Posting to server…");
+            const postMode = $("postMode").value;
+            const payload = {
+              requestId: output.requestId,
+              sealedResult: output.sealedResult,
+
+              // v4-ish aliases too
+              event_id: output.event_id,
+              sealed_result: output.sealed_result,
+
+              collected_at_ms: Date.now(),
+              page_url: location.href,
+            };
+            const resp = await postPayload(postUrl, postMode, payload);
+            setStatus(
+              resp.ok
+                ? (resp.note || `POST ok (${resp.status})`)
+                : `POST failed (${resp.status}): ${resp.text || "(no body)"}`,
+              resp.ok ? "ok" : "err",
+            );
+          } else {
+            setStatus("Done", "ok");
+          }
+        } catch (e) {
+          setStatus("Error", "err");
+          outEl.textContent = String(e?.stack || e);
+        }
+      }
+
+      $("run").addEventListener("click", run);
+      $("copyLink").addEventListener("click", async () => {
+        const link = buildLinkFromUI();
+        await navigator.clipboard.writeText(link);
+        setStatus("Link copied", "ok");
+      });
+
+      const p = getParams();
+      applyParamsToUI(p);
+      if (p.autorun) run();
+    </script>
+  </body>
+</html>
